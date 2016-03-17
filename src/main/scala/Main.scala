@@ -3,6 +3,7 @@ import java.net.URLClassLoader
 import java.util.jar.{JarEntry, JarFile}
 
 import scala.collection.JavaConversions._
+import scala.reflect.api.JavaUniverse
 import scala.reflect.runtime.universe
 
 object Main {
@@ -23,19 +24,23 @@ object Main {
     case other => other.substring(0, 1).toUpperCase() + other.substring(1)
   }
 
+  def getSimpleName(fullName: String) = {
+    val namePos = fullName.lastIndexOf('$').max(fullName.lastIndexOf('.'))
+    fullName.substring(namePos + 1)
+  }
+
   def generateClassString(jarEntry: JarEntry)(implicit classLoader: ClassLoader): String = {
 
     val fullClassName: String = jarEntry.getName.dropRight(6).replace('/', '.')
     val mirror = universe.runtimeMirror(classLoader)
-    val members = mirror.staticClass(fullClassName).asType.typeSignature.members
+
+    val clazz = mirror.staticClass(fullClassName)
+    val asType = clazz.asType
+    val signature = asType.typeSignature
+    val members = signature.members
 
     val caseClassValues = members.collect {
       case m if m.isTerm && m.asInstanceOf[universe.TermSymbol].isVal => m
-    }
-
-    def getSimpleName(fullName: String) = {
-      val namePos = fullName.lastIndexOf('$').max(fullName.lastIndexOf('.'))
-      fullName.substring(namePos + 1)
     }
 
     def typeNameForType(t: universe.Type) = {
@@ -66,19 +71,20 @@ object Main {
     sb.toString()
   }
 
-  def runExport(config: Config): Unit = {
+  def generateClassesString(config: Config): String = {
     val jarFiles = config.jars.map(new JarFile(_))
     implicit val classLoader = new URLClassLoader(config.jars.map(_.toURI.toURL).toArray)
-
-    val classes = jarFiles.flatMap(_.entries().filter(entry => config.classes.exists(searchClassName => entry.getName.endsWith(s"$searchClassName.class"))))
-
-    println(classes.map(generateClassString).mkString("\n \n"))
+    val classRegexes = config.classes.map(classPattern => {
+      (classPattern.replace("/", "\\.") + """\.class""").r
+    })
+    val classes = jarFiles.flatMap(_.entries().filter(entry => classRegexes.exists(regex => regex.pattern.matcher(entry.toString).find())))
+    classes.map(generateClassString).mkString("\n \n")
   }
 
   def main(args: Array[String]) {
 
     parser.parse(args, Config()) match {
-      case Some(config) => runExport(config)
+      case Some(config) => println(generateClassesString(config))
       case None =>
     }
 
